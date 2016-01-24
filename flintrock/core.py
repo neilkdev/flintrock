@@ -10,7 +10,12 @@ import time
 
 # Flintrock modules
 from .exceptions import SSHError, NodeError
-from .ssh import get_ssh_client, ssh_check_output, ssh
+from .ssh import (
+    gimmeh_ssh_client,
+    get_ssh_client,
+    ssh_run,
+    ssh_check_output,
+    ssh)
 
 FROZEN = getattr(sys, 'frozen', False)
 
@@ -351,13 +356,7 @@ def _run_asynchronously(*, partial_func: functools.partial, hosts: list):
 
     tasks = []
     for host in hosts:
-        # TODO: Use parameter names for run_in_executor() once Python 3.4.4 is released.
-        #       Until then, we leave them out to maintain compatibility across Python 3.4
-        #       and 3.5.
-        # See: http://stackoverflow.com/q/32873974/
-        task = loop.run_in_executor(
-            executor,
-            functools.partial(partial_func, host=host))
+        task = asyncio.ensure_future(partial_func(host=host))
         tasks.append(task)
 
     try:
@@ -432,7 +431,7 @@ def provision_cluster(
         service.health_check(master_host=cluster.master_host)
 
 
-def provision_node(
+async def provision_node(
         *,
         services: list,
         user: str,
@@ -444,16 +443,15 @@ def provision_node(
     storage, and install the specified services.
 
     This method is role-agnostic; it runs on both the cluster master and slaves.
-    This method is meant to be called asynchronously.
     """
-    client = get_ssh_client(
+    client = await gimmeh_ssh_client(
         user=user,
         host=host,
         identity_file=identity_file,
         print_status=True)
 
     with client:
-        ssh_check_output(
+        await ssh_run(
             client=client,
             command="""
                 set -e
@@ -466,15 +464,15 @@ def provision_node(
                 private_key=shlex.quote(cluster.ssh_key_pair.private),
                 public_key=shlex.quote(cluster.ssh_key_pair.public)))
 
-        with client.open_sftp() as sftp:
-            sftp.put(
-                localpath=os.path.join(SCRIPTS_DIR, 'setup-ephemeral-storage.py'),
+        with (await client.start_sftp_client()) as sftp:
+            await sftp.put(
+                localpaths=os.path.join(SCRIPTS_DIR, 'setup-ephemeral-storage.py'),
                 remotepath='/tmp/setup-ephemeral-storage.py')
 
         print("[{h}] Configuring ephemeral storage...".format(h=host))
         # TODO: Print some kind of warning if storage is large, since formatting
         #       will take several minutes (~4 minutes for 2TB).
-        storage_dirs_raw = ssh_check_output(
+        storage_dirs_raw = await ssh_run(
             client=client,
             command="""
                 set -e
@@ -487,7 +485,7 @@ def provision_node(
         cluster.storage_dirs.ephemeral = storage_dirs['ephemeral']
 
         # The default CentOS AMIs on EC2 don't come with Java installed.
-        java_home = ssh_check_output(
+        java_home = await ssh_run(
             client=client,
             command="""
                 echo "$JAVA_HOME"
@@ -496,7 +494,7 @@ def provision_node(
         if not java_home.strip():
             print("[{h}] Installing Java...".format(h=host))
 
-            ssh_check_output(
+            await ssh_run(
                 client=client,
                 command="""
                     set -e
@@ -507,15 +505,15 @@ def provision_node(
                 """)
 
         for service in services:
-            service.install(
+            await service.install(
                 ssh_client=client,
                 cluster=cluster)
-            service.configure(
+            await service.configure(
                 ssh_client=client,
                 cluster=cluster)
 
 
-def start_node(
+async def start_node(
         *,
         services: list,
         user: str,
@@ -527,9 +525,8 @@ def start_node(
     work.
 
     This method is role-agnostic; it runs on both the cluster master and slaves.
-    This method is meant to be called asynchronously.
     """
-    ssh_client = get_ssh_client(
+    ssh_client = await gimmeh_ssh_client(
         user=user,
         host=host,
         identity_file=identity_file,
@@ -539,7 +536,7 @@ def start_node(
         # TODO: Consider consolidating ephemeral storage code under a dedicated
         #       Flintrock service.
         if cluster.storage_dirs.ephemeral:
-            ssh_check_output(
+            await ssh_run(
                 client=ssh_client,
                 command="""
                     sudo chown "{u}:{u}" {d}
@@ -548,20 +545,19 @@ def start_node(
                     d=' '.join(cluster.storage_dirs.ephemeral)))
 
         for service in services:
-            service.configure(
+            await service.configure(
                 ssh_client=ssh_client,
                 cluster=cluster)
 
 
-def run_command_node(*, user: str, host: str, identity_file: str, command: tuple):
+async def run_command_node(*, user: str, host: str, identity_file: str, command: tuple):
     """
     Run a shell command on a node.
 
     This method is role-agnostic; it runs on both the cluster master and slaves.
-    This method is meant to be called asynchronously.
     """
     # TODO: Timeout quickly if SSH is not available.
-    ssh_client = get_ssh_client(
+    ssh_client = await gimmeh_ssh_client(
         user=user,
         host=host,
         identity_file=identity_file)
@@ -571,14 +567,14 @@ def run_command_node(*, user: str, host: str, identity_file: str, command: tuple
     command_str = ' '.join(command)
 
     with ssh_client:
-        ssh_check_output(
+        await ssh_run(
             client=ssh_client,
             command=command_str)
 
     print("[{h}] Command complete.".format(h=host))
 
 
-def copy_file_node(
+async def copy_file_node(
         *,
         user: str,
         host: str,
@@ -589,10 +585,9 @@ def copy_file_node(
     Copy a file to the specified remote path on a node.
 
     This method is role-agnostic; it runs on both the cluster master and slaves.
-    This method is meant to be called asynchronously.
     """
     # TODO: Timeout quickly if SSH is not available.
-    ssh_client = get_ssh_client(
+    ssh_client = await gimmeh_ssh_client(
         user=user,
         host=host,
         identity_file=identity_file)
@@ -601,7 +596,7 @@ def copy_file_node(
         remote_dir = posixpath.dirname(remote_path)
 
         try:
-            ssh_check_output(
+            await ssh_run(
                 client=ssh_client,
                 command="""
                     test -d {path}
@@ -610,10 +605,10 @@ def copy_file_node(
             # TODO: Catch more specific exception.
             raise Exception("Remote directory does not exist: {d}".format(d=remote_dir))
 
-        with ssh_client.open_sftp() as sftp:
+        with (await ssh_client.start_sftp_client()) as sftp:
             print("[{h}] Copying file...".format(h=host))
 
-            sftp.put(localpath=local_path, remotepath=remote_path)
+            await sftp.put(localpaths=local_path, remotepath=remote_path)
 
             print("[{h}] Copy complete.".format(h=host))
 

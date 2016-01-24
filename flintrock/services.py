@@ -6,11 +6,11 @@ import textwrap
 import urllib.request
 
 # External modules
-import paramiko
+import asyncssh
 
 # Flintrock modules
 from .core import FlintrockCluster
-from .ssh import ssh_check_output
+from .ssh import ssh_run, ssh_check_output
 
 FROZEN = getattr(sys, 'frozen', False)
 
@@ -45,35 +45,34 @@ class FlintrockService:
         """
         raise NotImplementedError
 
-    def install(
+    async def install(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         """
         Install the service on a node via the provided SSH client. This typically
         means downloading a software package and maybe even building it if necessary.
 
         This method is role-agnostic; it runs on both the cluster master and slaves.
-        This method is meant to be called asynchronously.
         """
         raise NotImplementedError
 
-    def configure(
+    async def configure(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         """
         Configure the installed service on a node via the provided SSH client. This
         typically means using templates to create configuration files on the node.
 
         This method is role-agnostic; it runs on both the cluster master and slaves.
-        This method is meant to be called asynchronously.
         """
         raise NotImplementedError
 
+    # Should this be async?
     def configure_master(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         """
         Configure the service master on a node via the provided SSH client after the
@@ -81,20 +80,18 @@ class FlintrockService:
         slaves.
 
         This method is meant to be called once on the cluster master.
-        This method is meant to be called asynchronously.
         """
         raise NotImplementedError
 
-    def configure_slave(
+    async def configure_slave(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         """
         Configure a service slave on a node via the provided SSH client after the
         role-agnostic configuration in configure() is complete.
 
         This method is meant to be called once on each cluster slave.
-        This method is meant to be called asynchronously.
         """
         raise NotImplementedError
 
@@ -112,19 +109,20 @@ class HDFS(FlintrockService):
         self.version = version
         self.manifest = {'version': version}
 
-    def install(
+    async def install(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
-        print("[{h}] Installing HDFS...".format(
-            h=ssh_client.get_transport().getpeername()[0]))
+        ip, port = ssh_client.get_extra_info('peername')
 
-        with ssh_client.open_sftp() as sftp:
-            sftp.put(
-                localpath=os.path.join(SCRIPTS_DIR, 'download-hadoop.py'),
+        print("[{h}] Installing HDFS...".format(h=ip))
+
+        with (await ssh_client.start_sftp_client()) as sftp:
+            await sftp.put(
+                localpaths=os.path.join(SCRIPTS_DIR, 'download-hadoop.py'),
                 remotepath='/tmp/download-hadoop.py')
 
-        ssh_check_output(
+        await ssh_run(
             client=ssh_client,
             command="""
                 set -e
@@ -138,9 +136,9 @@ class HDFS(FlintrockService):
                 rm "hadoop-{version}.tar.gz"
             """.format(version=self.version))
 
-    def configure(
+    async def configure(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         # TODO: os.walk() through these files.
         template_paths = [
@@ -151,7 +149,7 @@ class HDFS(FlintrockService):
             'hadoop/conf/hdfs-site.xml']
 
         for template_path in template_paths:
-            ssh_check_output(
+            await ssh_run(
                 client=ssh_client,
                 command="""
                     echo {f} > {p}
@@ -166,7 +164,7 @@ class HDFS(FlintrockService):
     #       stuff out of configure() into configure_master() and configure_slave().
     def configure_master(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         host = ssh_client.get_transport().getpeername()[0]
         print("[{h}] Configuring HDFS master...".format(h=host))
@@ -213,24 +211,29 @@ class Spark(FlintrockService):
             'git_commit': git_commit,
             'git_repository': git_repository}
 
-    def install(
+    async def install(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         # TODO: Allow users to specify the Spark "distribution". (?)
         distribution = 'hadoop2.6'
 
-        print("[{h}] Installing Spark...".format(
-            h=ssh_client.get_transport().getpeername()[0]))
+        ip, port = ssh_client.get_extra_info('peername')
+
+        print("[{h}] Installing Spark...".format(h=ip))
 
         try:
             if self.version:
-                with ssh_client.open_sftp() as sftp:
-                    sftp.put(
-                        localpath=os.path.join(SCRIPTS_DIR, 'install-spark.sh'),
+                with (await ssh_client.start_sftp_client()) as sftp:
+                    await sftp.put(
+                        localpaths=os.path.join(SCRIPTS_DIR, 'install-spark.sh'),
                         remotepath='/tmp/install-spark.sh')
-                    sftp.chmod(path='/tmp/install-spark.sh', mode=0o755)
-                ssh_check_output(
+                    # Bug. See: https://github.com/ronf/asyncssh/issues/44
+                    # await sftp.chmod(path='/tmp/install-spark.sh', mode=int(0o755))
+                await ssh_run(
+                    client=ssh_client,
+                    command="chmod 755 /tmp/install-spark.sh")
+                await ssh_run(
                     client=ssh_client,
                     command="""
                         set -e
@@ -240,14 +243,14 @@ class Spark(FlintrockService):
                             spark_version=shlex.quote(self.version),
                             distribution=shlex.quote(distribution)))
             else:
-                ssh_check_output(
+                await ssh_run(
                     client=ssh_client,
                     command="""
                         set -e
                         sudo yum install -y git
                         sudo yum install -y java-devel
                         """)
-                ssh_check_output(
+                await ssh_run(
                     client=ssh_client,
                     command="""
                         set -e
@@ -264,15 +267,15 @@ class Spark(FlintrockService):
             print(e, file=sys.stderr)
             raise
 
-    def configure(
+    async def configure(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         template_paths = [
             'spark/conf/spark-env.sh',
             'spark/conf/slaves']
         for template_path in template_paths:
-            ssh_check_output(
+            await ssh_run(
                 client=ssh_client,
                 command="""
                     echo {f} > {p}
@@ -289,7 +292,7 @@ class Spark(FlintrockService):
     #       a sleep() before starting the master.
     def configure_master(
             self,
-            ssh_client: paramiko.client.SSHClient,
+            ssh_client: asyncssh.SSHClientConnection,
             cluster: FlintrockCluster):
         host = ssh_client.get_transport().getpeername()[0]
         print("[{h}] Configuring Spark master...".format(h=host))
