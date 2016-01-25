@@ -228,11 +228,7 @@ class Spark(FlintrockService):
                     await sftp.put(
                         localpaths=os.path.join(SCRIPTS_DIR, 'install-spark.sh'),
                         remotepath='/tmp/install-spark.sh')
-                    # Bug. See: https://github.com/ronf/asyncssh/issues/44
-                    # await sftp.chmod(path='/tmp/install-spark.sh', mode=int(0o755))
-                await ssh_run(
-                    client=ssh_client,
-                    command="chmod 755 /tmp/install-spark.sh")
+                    await sftp.chmod(path='/tmp/install-spark.sh', mode=int(0o755))
                 await ssh_run(
                     client=ssh_client,
                     command="""

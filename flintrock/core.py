@@ -1,5 +1,3 @@
-import asyncio
-import concurrent.futures
 import functools
 import json
 import os
@@ -9,13 +7,13 @@ import sys
 import time
 
 # Flintrock modules
-from .exceptions import SSHError, NodeError
 from .ssh import (
     gimmeh_ssh_client,
     get_ssh_client,
     ssh_run,
     ssh_check_output,
     ssh)
+from .util import run_asynchronously
 
 FROZEN = getattr(sys, 'frozen', False)
 
@@ -139,7 +137,7 @@ class FlintrockCluster:
         """
         Start up all the services installed on the cluster.
 
-        This method assumes that the nodes constituting cluster were just
+        This method assumes that the nodes constituting the cluster were just
         started up by the provider (e.g. EC2, GCE, etc.) they're hosted on
         and are running.
         """
@@ -193,7 +191,7 @@ class FlintrockCluster:
             cluster=self)
         hosts = [self.master_ip] + self.slave_ips
 
-        _run_asynchronously(partial_func=partial_func, hosts=hosts)
+        run_asynchronously(partial_func=partial_func, hosts=hosts)
 
         master_ssh_client = get_ssh_client(
             user=user,
@@ -266,7 +264,7 @@ class FlintrockCluster:
             command=command)
         hosts = target_hosts
 
-        _run_asynchronously(partial_func=partial_func, hosts=hosts)
+        run_asynchronously(partial_func=partial_func, hosts=hosts)
 
     def copy_file_check(self):
         """
@@ -304,7 +302,7 @@ class FlintrockCluster:
             remote_path=remote_path)
         hosts = target_hosts
 
-        _run_asynchronously(partial_func=partial_func, hosts=hosts)
+        run_asynchronously(partial_func=partial_func, hosts=hosts)
 
     def login(
             self,
@@ -345,40 +343,6 @@ class FlintrockCluster:
         return template_mapping
 
 
-def _run_asynchronously(*, partial_func: functools.partial, hosts: list):
-    """
-    Run a function asynchronously against each of the provided hosts.
-
-    This function assumes that partial_func accepts `host` as a keyword argument.
-    """
-    loop = asyncio.get_event_loop()
-    executor = concurrent.futures.ThreadPoolExecutor(len(hosts))
-
-    tasks = []
-    for host in hosts:
-        task = asyncio.ensure_future(partial_func(host=host))
-        tasks.append(task)
-
-    try:
-        loop.run_until_complete(asyncio.gather(*tasks))
-        # done, _ = loop.run_until_complete(asyncio.wait(tasks))
-        # # Is this the right way to make sure no coroutine failed?
-        # for future in done:
-        #     future.result()
-    except SSHError as e:
-        raise NodeError(str(e))
-    finally:
-        # TODO: Let KeyboardInterrupt cleanly cancel hung commands.
-        #       Currently, we can't do this without dumping a large stack trace or
-        #       waiting until the executor threads yield control.
-        #       See: http://stackoverflow.com/q/29177490/
-        # We shutdown explcitly to make sure threads are cleaned up before shutting
-        # the loop down.
-        # See: http://stackoverflow.com/a/32615276/
-        executor.shutdown(wait=True)
-        loop.close()
-
-
 def provision_cluster(
         *,
         cluster: FlintrockCluster,
@@ -396,7 +360,7 @@ def provision_cluster(
         cluster=cluster)
     hosts = [cluster.master_ip] + cluster.slave_ips
 
-    _run_asynchronously(partial_func=partial_func, hosts=hosts)
+    run_asynchronously(partial_func=partial_func, hosts=hosts)
 
     master_ssh_client = get_ssh_client(
         user=user,
