@@ -48,7 +48,7 @@ setuptools.setup(
     # totally break Flintrock.
     # For example: https://github.com/paramiko/paramiko/issues/615
     install_requires=[
-        'asyncssh == 1.4.1',
+        'asyncssh == 1.5.0',
         'boto3 == 1.2.3',
         'botocore == 1.3.26',
         'click == 6.2',

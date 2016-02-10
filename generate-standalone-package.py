@@ -19,6 +19,10 @@ if __name__ == '__main__':
             '--clean',
             '--name', 'flintrock',
             '--additional-hooks-dir', '.',
+            # This hidden import is for AsyncSSH / Cryptography.
+            # It will become unnecessary with resolution of this issue:
+            # https://github.com/pyinstaller/pyinstaller/issues/1425
+            '--hidden-import', '_cffi_backend',
             'standalone.py'],
         check=True)
 
