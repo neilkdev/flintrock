@@ -23,6 +23,22 @@ from .exceptions import (
 from .ssh import generate_ssh_key_pair
 
 
+class NoDefaultVPC(Error):
+    def __init__(self, *, region: str):
+        super().__init__(
+            "Flintrock could not find a default VPC in {r}. "
+            "Please explicitly specify a VPC to work with in that region. "
+            "Flintrock does not support managing EC2 clusters outside a VPC."
+            .format(r=region)
+        )
+        self.region = region
+
+
+class ConfigurationNotSupported(Error):
+    def __init__(self, message):
+        super().__init__(message)
+
+
 def timeit(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -38,12 +54,14 @@ class EC2Cluster(FlintrockCluster):
     def __init__(
             self,
             region: str,
+            vpc_id: str,
             master_instance: 'boto3.resources.factory.ec2.Instance',
             slave_instances: "List[boto3.resources.factory.ec2.Instance]",
             *args,
             **kwargs):
         super().__init__(*args, **kwargs)
         self.region = region
+        self.vpc_id = vpc_id
         self.master_instance = master_instance
         self.slave_instances = slave_instances
 
@@ -105,7 +123,10 @@ class EC2Cluster(FlintrockCluster):
         # TODO: Centralize logic to get Flintrock base security group. (?)
         flintrock_base_group = list(
             ec2.security_groups.filter(
-                GroupNames=['flintrock']))[0]
+                Filters=[
+                    {'Name': 'group-name', 'Values': ['flintrock']},
+                    {'Name': 'vpc-id', 'Values': [self.vpc_id]},
+                ]))[0]
 
         # We "unassign" the cluster security group here (i.e. the
         # 'flintrock-clustername' group) so that we can immediately delete it once
@@ -116,9 +137,15 @@ class EC2Cluster(FlintrockCluster):
         for instance in self.instances:
             instance.modify_attribute(
                 Groups=[flintrock_base_group.id])
+
         # TODO: Centralize logic to get cluster security group name from cluster name.
-        for sg in ec2.security_groups.filter(GroupNames=['flintrock-' + self.name]):
-            sg.delete()
+        cluster_group = list(
+            ec2.security_groups.filter(
+                Filters=[
+                    {'Name': 'group-name', 'Values': ['flintrock-' + self.name]},
+                    {'Name': 'vpc-id', 'Values': [self.vpc_id]},
+                ]))[0]
+        cluster_group.delete()
 
         (ec2.instances
             .filter(InstanceIds=[instance.id for instance in self.instances])
@@ -215,6 +242,47 @@ class EC2Cluster(FlintrockCluster):
         # print('...')
 
 
+def get_default_vpc(region: str) -> 'boto3.resources.factory.ec2.Vpc':
+    """
+    Get the user's default VPC in the provided region.
+    """
+    ec2 = boto3.resource(service_name='ec2', region_name=region)
+
+    default_vpc = list(
+        ec2.vpcs.filter(
+            Filters=[{'Name': 'isDefault', 'Values': ['true']}]))
+
+    if default_vpc:
+        return default_vpc[0]
+    else:
+        raise NoDefaultVPC(region=region)
+
+
+def check_network_config(*, region_name: str, vpc_id: str, subnet_id: str):
+    """
+    Check that the VPC and subnet are configured to allow Flintrock to create
+    clusters.
+
+    Currently, Flintrock requires DNS names and public IPs to be enabled.
+    """
+    ec2 = boto3.resource(service_name='ec2', region_name=region_name)
+
+    if not ec2.Vpc(vpc_id).describe_attribute(Attribute='enableDnsHostnames')['EnableDnsHostnames']['Value']:
+        raise ConfigurationNotSupported(
+            "{v} does not have DNS hostnames enabled. "
+            "Flintrock requires DNS hostnames to be enabled.\n"
+            "See: https://github.com/nchammas/flintrock/issues/43"
+            .format(v=vpc_id)
+        )
+    if not ec2.Subnet(subnet_id).map_public_ip_on_launch:
+        raise ConfigurationNotSupported(
+            "{s} does not auto-assign public IP addresses. "
+            "Flintrock requires public IP addresses.\n"
+            "See: https://github.com/nchammas/flintrock/issues/14"
+            .format(s=subnet_id)
+        )
+
+
 def get_or_create_ec2_security_groups(
         *,
         cluster_name,
@@ -244,7 +312,9 @@ def get_or_create_ec2_security_groups(
     flintrock_group = list(
         ec2.security_groups.filter(
             Filters=[
-                {'Name': 'group-name', 'Values': [flintrock_group_name]}]))
+                {'Name': 'group-name', 'Values': [flintrock_group_name]},
+                {'Name': 'vpc-id', 'Values': [vpc_id]},
+            ]))
     flintrock_group = flintrock_group[0] if flintrock_group else None
 
     # The cluster group is specific to one Flintrock cluster and authorizes intra-cluster
@@ -252,7 +322,9 @@ def get_or_create_ec2_security_groups(
     cluster_group = list(
         ec2.security_groups.filter(
             Filters=[
-                {'Name': 'group-name', 'Values': [cluster_group_name]}]))
+                {'Name': 'group-name', 'Values': [cluster_group_name]},
+                {'Name': 'vpc-id', 'Values': [vpc_id]},
+            ]))
     cluster_group = cluster_group[0] if cluster_group else None
 
     if not flintrock_group:
@@ -295,6 +367,12 @@ def get_or_create_ec2_security_groups(
             from_port=4040,
             to_port=4040,
             cidr_ip=flintrock_client_cidr,
+            src_group=None),
+        SecurityGroupRule(
+            ip_protocol='tcp',
+            from_port=7077,
+            to_port=7077,
+            cidr_ip=flintrock_client_cidr,
             src_group=None)
     ]
 
@@ -320,7 +398,13 @@ def get_or_create_ec2_security_groups(
 
     try:
         cluster_group.authorize_ingress(
-            SourceSecurityGroupName=cluster_group.group_name)
+            IpPermissions=[
+                {
+                    'IpProtocol': '-1',  # -1 means all
+                    'FromPort': -1,
+                    'ToPort': -1,
+                    'UserIdGroupPairs': [{'GroupId': cluster_group.id}]
+                }])
     except botocore.exceptions.ClientError as e:
         if e.response['Error']['Code'] != 'InvalidPermission.Duplicate':
             raise Exception("Error authorizing cluster ingress to self.") from e
@@ -339,7 +423,10 @@ def get_ec2_block_device_mappings(
     """
     ec2 = boto3.resource(service_name='ec2', region_name=region)
     block_device_mappings = []
+    min_root_device_size_gb = 30
 
+    # An IndexError here is probably a sign of this problem:
+    # https://github.com/boto/boto3/issues/496
     image = list(
         ec2.images.filter(ImageIds=[ami]))[0]
 
@@ -347,15 +434,16 @@ def get_ec2_block_device_mappings(
         root_device = [
             device for device in image.block_device_mappings
             if device['DeviceName'] == image.root_device_name][0]
-        root_device['Ebs'].update({
-            # Max root volume size for instance store-backed AMIs is 10 GiB.
-            # See: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/add-instance-store-volumes.html
-            # Though, this code is probably incorrect for instance store-backed
-            # instances anyway, since boto3 doesn't seem to let you set the size
-            # of a root instance store volume.
-            'VolumeSize': 30,
-            # gp2 is general-purpose SSD
-            'VolumeType': 'gp2'})
+        if root_device['Ebs']['VolumeSize'] < min_root_device_size_gb:
+            root_device['Ebs'].update({
+                # Max root volume size for instance store-backed AMIs is 10 GiB.
+                # See: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/add-instance-store-volumes.html
+                # Though, this code is probably incorrect for instance store-backed
+                # instances anyway, since boto3 doesn't seem to let you set the size
+                # of a root instance store volume.
+                'VolumeSize': min_root_device_size_gb,
+                # gp2 is general-purpose SSD
+                'VolumeType': 'gp2'})
         del root_device['Ebs']['Encrypted']
         block_device_mappings.append(root_device)
 
@@ -375,28 +463,47 @@ def launch(
         num_slaves,
         services,
         assume_yes,
-        key_name, identity_file,
+        key_name,
+        identity_file,
         instance_type,
         region,
         availability_zone,
         ami,
         user,
         spot_price=None,
-        vpc_id, subnet_id,
+        vpc_id,
+        subnet_id,
         instance_profile_name,
         placement_group,
         tenancy='default',
         ebs_optimized=False,
         instance_initiated_shutdown_behavior='stop'):
+    """
+    Launch a cluster.
+    """
+    if not vpc_id:
+        vpc_id = get_default_vpc(region=region).id
+    else:
+        # If it's a non-default VPC -- i.e. the user set it up -- make sure it's
+        # configured correctly.
+        check_network_config(
+            region_name=region,
+            vpc_id=vpc_id,
+            subnet_id=subnet_id)
+
     try:
-        get_cluster(cluster_name=cluster_name, region=region)
+        get_cluster(
+            cluster_name=cluster_name,
+            region=region,
+            vpc_id=vpc_id)
     except ClusterNotFound as e:
         pass
     else:
         raise ClusterAlreadyExists(
-            "Cluster {c} already exists in region {r}.".format(
+            "Cluster {c} already exists in region {r}, VPC {v}.".format(
                 c=cluster_name,
-                r=region))
+                r=region,
+                v=vpc_id))
 
     try:
         security_groups = get_or_create_ec2_security_groups(
@@ -453,9 +560,19 @@ def launch(
                 time.sleep(30)
                 spot_requests = client.describe_spot_instance_requests(
                     SpotInstanceRequestIds=request_ids)['SpotInstanceRequests']
+
+                failed_requests = [r for r in spot_requests if r['State'] == 'failed']
+                if failed_requests:
+                    failure_reasons = {r['Status']['Code'] for r in failed_requests}
+                    raise Error(
+                        "The spot request failed for the following reason{s}: {reasons}"
+                        .format(
+                            s='' if len(failure_reasons) == 1 else 's',
+                            reasons=', '.join(failure_reasons)))
+
                 pending_request_ids = [
                     r['SpotInstanceRequestId'] for r in spot_requests
-                    if r['State'] != 'active']
+                    if r['State'] == 'open']
 
             print("All {c} instances granted.".format(c=num_instances))
 
@@ -504,6 +621,7 @@ def launch(
         cluster = EC2Cluster(
             name=cluster_name,
             region=region,
+            vpc_id=vpc_id,
             ssh_key_pair=generate_ssh_key_pair(),
             master_instance=master_instance,
             slave_instances=slave_instances)
@@ -518,7 +636,7 @@ def launch(
 
     except (Exception, KeyboardInterrupt) as e:
         # TODO: Cleanup cluster security group here.
-        print(e, file=sys.stderr)
+        print("There was a problem with the launch. Cleaning up...", file=sys.stderr)
 
         if spot_requests:
             request_ids = [r['SpotInstanceRequestId'] for r in spot_requests]
@@ -553,16 +671,18 @@ def launch(
         raise
 
 
-def get_cluster(*, cluster_name: str, region: str) -> EC2Cluster:
+def get_cluster(*, cluster_name: str, region: str, vpc_id: str) -> EC2Cluster:
     """
     Get an existing EC2 cluster.
     """
-    return get_clusters(
+    cluster = get_clusters(
         cluster_names=[cluster_name],
-        region=region)[0]
+        region=region,
+        vpc_id=vpc_id)
+    return cluster[0]
 
 
-def get_clusters(*, cluster_names: list=[], region: str) -> list:
+def get_clusters(*, cluster_names: list=[], region: str, vpc_id: str) -> list:
     """
     Get all the named clusters. If no names are given, get all clusters.
 
@@ -571,6 +691,8 @@ def get_clusters(*, cluster_names: list=[], region: str) -> list:
     AWS -- a network operation -- is by far the slowest step.
     """
     ec2 = boto3.resource(service_name='ec2', region_name=region)
+    if not vpc_id:
+        vpc_id = get_default_vpc(region=region).id
 
     if cluster_names:
         group_name_filter = ['flintrock-' + cn for cn in cluster_names]
@@ -580,7 +702,9 @@ def get_clusters(*, cluster_names: list=[], region: str) -> list:
     all_clusters_instances = list(
         ec2.instances.filter(
             Filters=[
-                {'Name': 'instance.group-name', 'Values': group_name_filter}]))
+                {'Name': 'instance.group-name', 'Values': group_name_filter},
+                {'Name': 'vpc-id', 'Values': [vpc_id]},
+            ]))
 
     found_cluster_names = {
         _get_cluster_name(instance) for instance in all_clusters_instances}
@@ -596,6 +720,7 @@ def get_clusters(*, cluster_names: list=[], region: str) -> list:
         _compose_cluster(
             name=cluster_name,
             region=region,
+            vpc_id=vpc_id,
             instances=list(filter(
                 lambda x: _get_cluster_name(x) == cluster_name, all_clusters_instances)))
         for cluster_name in found_cluster_names]
@@ -644,7 +769,7 @@ def _get_cluster_master_slaves(
     return (master_instance, slave_instances)
 
 
-def _compose_cluster(*, name: str, region: str, instances: list) -> EC2Cluster:
+def _compose_cluster(*, name: str, region: str, vpc_id: str, instances: list) -> EC2Cluster:
     """
     Compose an EC2Cluster object from a set of raw EC2 instances representing
     a Flintrock cluster.
@@ -654,6 +779,7 @@ def _compose_cluster(*, name: str, region: str, instances: list) -> EC2Cluster:
     cluster = EC2Cluster(
         name=name,
         region=region,
+        vpc_id=vpc_id,
         master_instance=master_instance,
         slave_instances=slave_instances)
 

@@ -4,6 +4,8 @@
 [![Build Status](https://img.shields.io/travis/nchammas/flintrock.svg)](https://travis-ci.org/nchammas/flintrock)
 [![Chat](https://img.shields.io/gitter/room/nchammas/flintrock.svg)](https://gitter.im/nchammas/flintrock)
 
+*Watch [@nchammas](https://github.com/nchammas)'s talk on Flintrock at Spark Summit East 2016: [talk](https://www.youtube.com/watch?v=3aeIpOGrJOA) / [slides](http://www.slideshare.net/SparkSummit/flintrock-a-faster-better-sparkec2-by-nicholas-chammas)*
+
 Flintrock is a command-line tool for launching [Apache Spark](http://spark.apache.org/) clusters.
 
 **Flintrock is currently undergoing heavy development. Until we make a 1.0 release, you probably should not use Flintrock unless you are ready to keep up with frequent changes to how it works.** Python hackers or heavy spark-ec2 users who are looking to experiment with something new are welcome to try Flintrock out and potentially even [contribute](https://github.com/nchammas/flintrock/blob/master/CONTRIBUTING.md).
@@ -86,8 +88,9 @@ Find the standalone package for your OS under our [latest release](https://githu
 For example:
 
 ```sh
-curl --location --remote-name "https://github.com/nchammas/flintrock/releases/download/v0.3.0/Flintrock-0.3.0-standalone-OSX-x86_64.zip"
-unzip -q -d flintrock "Flintrock-0.3.0-standalone-OSX-x86_64.zip"
+flintrock_version="0.3.0"
+curl --location --remote-name "https://github.com/nchammas/flintrock/releases/download/v$flintrock_version/Flintrock-$flintrock_version-standalone-OSX-x86_64.zip"
+unzip -q -d flintrock "Flintrock-$flintrock_version-standalone-OSX-x86_64.zip"
 cd flintrock/
 
 # You're good to go!
@@ -163,7 +166,13 @@ flintrock launch test-cluster --num-slaves 10
 
 Flintrock lets you persist your desired configuration to a YAML file so that you don't have to keep typing out the same options over and over at the command line.
 
-To setup and edit the default config file, call `flintrock configure`. You can also point Flintrock to a non-default config file by using the `--config` option.
+To setup and edit the default config file, run this:
+
+```sh
+flintrock configure
+```
+
+You can also point Flintrock to a non-default config file by using the `--config` option.
 
 #### Sample `config.yaml`
 

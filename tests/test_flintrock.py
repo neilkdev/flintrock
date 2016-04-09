@@ -9,7 +9,8 @@ from flintrock.flintrock import (
     option_name_to_variable_name,
     variable_name_to_option_name,
     option_requires,
-    mutually_exclusive
+    mutually_exclusive,
+    get_latest_commit
 )
 
 
@@ -30,6 +31,7 @@ def test_option_name_to_variable_name_conversions():
 
 
 def test_option_requires():
+    some_option = 'something'
     unset_option = None
     set_option = '와 짠이다'
 
@@ -66,44 +68,43 @@ def test_option_requires():
 
 
 def test_option_requires_conditional_value():
-    with pytest.raises(Exception):
-        option_requires(
-            option='--some-option',
-            conditional_value='magic',
-            requires_any=[
-                '--set_option',
-                '--unset-option'],
-            scope=locals()
-        )
+    unset_option = None
+    set_option = '대박'
+
+    some_option = 'magic'
+    option_requires(
+        option='--some-option',
+        conditional_value='magic',
+        requires_any=[
+            '--set-option',
+            '--unset-option'],
+        scope=locals()
+    )
 
     some_option = 'not magic'
     option_requires(
         option='--some-option',
         conditional_value='magic',
         requires_any=[
-            '--set_option',
             '--unset-option'],
         scope=locals()
     )
 
-    some_option = 'magic'
+    some_option = ''
+    option_requires(
+        option='--some-option',
+        conditional_value='',
+        requires_any=[
+            '--unset-option'],
+        scope=locals()
+    )
+
     with pytest.raises(UsageError):
+        some_option = 'magic'
         option_requires(
             option='--some-option',
             conditional_value='magic',
             requires_any=[
-                '--set_option',
-                '--unset-option'],
-            scope=locals()
-        )
-
-    some_option = ''
-    with pytest.raises(UsageError):
-        option_requires(
-            option='--some-option',
-            conditional_value='',
-            requires_any=[
-                '--set_option',
                 '--unset-option'],
             scope=locals()
         )
@@ -126,3 +127,14 @@ def test_mutually_exclusive():
                 '--option1',
                 '--option2'],
             scope=locals())
+
+
+def test_get_latest_commit():
+    sha = get_latest_commit("https://github.com/apache/spark")
+    assert len(sha) == 40
+
+    with pytest.raises(UsageError):
+        get_latest_commit("https://google.com")
+
+    with pytest.raises(Exception):
+        get_latest_commit("https://github.com/apache/nonexistent-repo")

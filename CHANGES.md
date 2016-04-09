@@ -1,9 +1,23 @@
 # Change Log
 
 
-## [Unreleased](https://github.com/nchammas/flintrock/compare/v0.3.0...master)
+## [Unreleased](https://github.com/nchammas/flintrock/compare/v0.4.0...master)
 
-Nothing yet.
+Nothing notable yet.
+
+
+## [0.4.0](https://github.com/nchammas/flintrock/compare/v0.3.0...v0.4.0) - 2016-03-27
+
+### Added
+
+* [#98](https://github.com/nchammas/flintrock/pull/98), [#99](https://github.com/nchammas/flintrock/pull/99): You can now specify `latest` for `--spark-git-commit` and Flintrock will automatically build Spark on your cluster at the latest commit. This feature is only available for Spark repos hosted on GitHub.
+* [#94](https://github.com/nchammas/flintrock/pull/94): Flintrock now supports launching clusters into non-default VPCs.
+
+### Changed
+
+* [#86](https://github.com/nchammas/flintrock/pull/86): Flintrock now correctly catches when spot requests fail and bubbles up an appropriate error message.
+* [#93](https://github.com/nchammas/flintrock/pull/93), [#97](https://github.com/nchammas/flintrock/pull/97): Fixed the ability to build Spark from git. (It was broken for recent commits.)
+* [#96](https://github.com/nchammas/flintrock/pull/96), [#100](https://github.com/nchammas/flintrock/pull/100): Flintrock launches should now work correctly whether the default Python on the cluster is Python 2.7 or Python 3.4+.
 
 
 ## [0.3.0](https://github.com/nchammas/flintrock/compare/v0.2.0...v0.3.0) - 2016-02-14
@@ -11,6 +25,7 @@ Nothing yet.
 ### Changed
 
 * [`eca59fc`](https://github.com/nchammas/flintrock/commit/eca59fc0052874d9aa48b7d4d7d79192b5e609d1), [`3cf6ee6`](https://github.com/nchammas/flintrock/commit/3cf6ee64162ceaac6429d79c3bc6ef25988eaa8e): Tweaked a few things so that Flintrock can launch 200+ node clusters without hitting certain limits.
+
 
 ## [0.2.0](https://github.com/nchammas/flintrock/compare/v0.1.0...v0.2.0) - 2016-02-07
 
